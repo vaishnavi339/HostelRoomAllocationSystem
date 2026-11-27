@@ -1,0 +1,301 @@
+const { connectDB, closeDB } = require("./db");
+const bcrypt = require("bcryptjs");
+const Hostel = require("./models/Hostel");
+const Block = require("./models/Block");
+const Room = require("./models/Room");
+const Bed = require("./models/Bed");
+const Student = require("./models/Student");
+const Auth = require("./models/Auth");
+const Admin = require("./models/Admin");
+const Application = require("./models/Application");
+const AllocationDraft = require("./models/AllocationDraft");
+
+async function seedData() {
+  console.log("[Seeder] Starting database seeding process...");
+  await connectDB();
+
+  await Promise.all([
+    Hostel.deleteMany(),
+    Block.deleteMany(),
+    Room.deleteMany(),
+    Bed.deleteMany(),
+    Student.deleteMany(),
+    Auth.deleteMany(),
+    Admin.deleteMany(),
+    Application.deleteMany(),
+    AllocationDraft.deleteMany(),
+  ]);
+  console.log("[Seeder] Cleared previous database collections.");
+
+  // Boys Hostels (BH-1 to BH-9) with real LPU hostel images
+  const bhImages = [
+    "/images/lpu/boys-hostel.webp",
+    "/images/lpu/hero-banner.webp",
+    "/images/lpu/slide-3-hostels.webp",
+    "/images/lpu/boys-hostel-room.webp",
+    "/images/lpu/standard-room-1.webp",
+    "/images/lpu/standard-room-2.webp",
+    "/images/lpu/standard-room-3.webp",
+    "/images/lpu/apartments-room-1.webp",
+    "/images/lpu/apartments-room-2.webp",
+  ];
+  const boysHostels = [];
+  for (let i = 1; i <= 9; i++) {
+    const hostel = {
+      name: `Boys Hostel ${i}`,
+      code: `BH-${i}`,
+      genderAllowed: "Male",
+      campusLocation: i <= 5 ? "West Residential Zone (Boys Enclave)" : "North Residential Quadrant (Boys Wing)",
+      totalCapacity: 360,
+      availableCapacity: 360,
+      amenities: ["WiFi", "Laundry", "Mess", "Security", "Common Room", "Study Hall", "Indoor Gym"],
+      imageUrl: bhImages[(i - 1) % bhImages.length],
+      description: `Official LPU Boys Hostel ${i} (BH-${i}) with 9 floors, biometric turnstile entry, indoor gym, and comprehensive mess facilities for 360 male students.`
+    };
+    boysHostels.push(hostel);
+  }
+
+  // Girls Hostels (GH-1 to GH-3) with 3 distinct real LPU girls hostel images
+  const ghImages = [
+    "/images/lpu/girls-hostel-1.jpg",
+    "/images/lpu/girls-hostel.webp",
+    "/images/lpu/girls-hostel-3.jpg",
+  ];
+  const girlsHostels = [];
+  for (let i = 1; i <= 3; i++) {
+    const hostel = {
+      name: `Girls Hostel ${i}`,
+      code: `GH-${i}`,
+      genderAllowed: "Female",
+      campusLocation: "East Residential Quadrant (Secured Girls Enclave)",
+      totalCapacity: 360,
+      availableCapacity: Math.floor(Math.random() * 50 + 50),
+      amenities: ["WiFi", "Laundry", "Mess", "24/7 Female Warden", "Common Room", "Study Hall", "Beauty Salon"],
+      imageUrl: ghImages[(i - 1) % ghImages.length],
+      description: `Official LPU Girls Hostel ${i} (GH-${i}) with 9 floors, multi-tier biometric security, dedicated female wardens, and in-house dining for 360 female students.`
+    };
+    girlsHostels.push(hostel);
+  }
+
+  const allHostels = [...boysHostels, ...girlsHostels];
+  const createdHostels = await Hostel.insertMany(allHostels);
+  console.log(`[Seeder] Seeded ${createdHostels.length} Hostels (BH-1 to BH-9, GH-1 to GH-3).`);
+
+  // Create floors, rooms, and beds for each hostel
+  let totalBeds = 0;
+  for (const hostel of createdHostels) {
+    const blocks = [];
+    
+    // Create 9 floors per hostel
+    for (let floor = 1; floor <= 9; floor++) {
+      const block = {
+        hostelId: hostel._id,
+        name: `Floor ${floor}`,
+        code: `${hostel.code}-F${floor}`,
+        floorsCount: 1
+      };
+      blocks.push(block);
+    }
+    
+    const createdBlocks = await Block.insertMany(blocks);
+    
+    // Create rooms and beds for each floor
+    for (const block of createdBlocks) {
+      const rooms = [];
+      
+      // 10 rooms per floor (5 AC, 5 Non-AC)
+      for (let roomNum = 1; roomNum <= 10; roomNum++) {
+        const isAC = roomNum <= 5;
+        const floorNum = blocks.indexOf(block) + 1;
+        const room = {
+          blockId: block._id,
+          hostelId: hostel._id,
+          roomNumber: `${floorNum}${roomNum.toString().padStart(2, '0')}`,
+          floor: floorNum,
+          roomType: "Quad",
+          acType: isAC ? "AC" : "Non-AC",
+          totalBeds: 4,
+          availableBeds: 4,
+          rentPerSemester: isAC ? 25000 : 18000,
+          isPwDAccessible: floorNum === 1
+        };
+        rooms.push(room);
+      }
+      
+      const createdRooms = await Room.insertMany(rooms);
+      
+      // Create beds for each room
+      for (const room of createdRooms) {
+        const beds = [];
+        for (let bedNum = 1; bedNum <= 4; bedNum++) {
+          const bed = {
+            roomId: room._id,
+            blockId: room.blockId,
+            hostelId: room.hostelId,
+            bedNumber: bedNum,
+            isOccupied: false,
+            studentId: null
+          };
+          beds.push(bed);
+          totalBeds++;
+        }
+        await Bed.insertMany(beds);
+      }
+    }
+  }
+
+  for (const hostel of createdHostels) {
+    const roomTotals = await Room.aggregate([
+      { $match: { hostelId: hostel._id } },
+      { $group: { _id: null, total: { $sum: "$totalBeds" }, available: { $sum: "$availableBeds" } } },
+    ]);
+    const totals = roomTotals[0] || { total: 0, available: 0 };
+    await Hostel.findByIdAndUpdate(hostel._id, { totalCapacity: totals.total, availableCapacity: totals.available });
+  }
+
+  console.log(`[Seeder] Seeded ${totalBeds} Beds across all hostels.`);
+
+  // Create sample students
+  const sampleStudents = [
+    {
+      name: "Arjun Sharma",
+      email: "arjun.sharma@student.lpu.co.in",
+      rollNumber: "12304567",
+      department: "Computer Science",
+      gender: "Male",
+      year: 2,
+      cgpa: 8.5,
+      category: "General"
+    },
+    {
+      name: "Priya Patel",
+      email: "priya.patel@student.lpu.co.in",
+      rollNumber: "12304568",
+      department: "Electronics",
+      gender: "Female",
+      year: 1,
+      cgpa: 9.2,
+      category: "General"
+    },
+    {
+      name: "Arjun Sharma",
+      email: "arjun.sharma@student.lpu.co.in",
+      rollNumber: "12345678",
+      department: "Computer Science",
+      gender: "Male",
+      year: 2,
+      cgpa: 8.5,
+      category: "General"
+    },
+    {
+      name: "Priya Patel",
+      email: "priya.patel@student.lpu.co.in", 
+      rollNumber: "12345679",
+      department: "Electronics",
+      gender: "Female",
+      year: 1,
+      cgpa: 9.2,
+      category: "General"
+    },
+    {
+      name: "Rahul Verma",
+      email: "rahul.verma@student.lpu.co.in",
+      rollNumber: "12345680",
+      department: "Business Administration",
+      gender: "Male", 
+      year: 3,
+      cgpa: 7.8,
+      category: "OBC"
+    },
+    {
+      name: "Sneha Singh",
+      email: "sneha.singh@student.lpu.co.in",
+      rollNumber: "12345681",
+      department: "Information Technology",
+      gender: "Female",
+      year: 2,
+      cgpa: 8.9,
+      category: "General"
+    },
+    {
+      name: "Aditya Kumar",
+      email: "aditya.kumar@student.lpu.co.in",
+      rollNumber: "12345682", 
+      department: "Mechanical Engineering",
+      gender: "Male",
+      year: 4,
+      cgpa: 8.1,
+      category: "SC"
+    }
+  ];
+
+  const createdStudents = await Student.insertMany(sampleStudents);
+
+  // Seed Student Auth credentials (default password: password123)
+  const studentPasswordHash = await bcrypt.hash("password123", 10);
+  await Auth.insertMany(
+    createdStudents.map((s) => ({
+      rollNumber: s.rollNumber,
+      passwordHash: studentPasswordHash,
+    }))
+  );
+  console.log(`[Seeder] Seeded ${createdStudents.length} Registered Students & Auth Credentials.`);
+
+  // Seed Admin Auth credentials (default password: adminpassword)
+  const adminPasswordHash = await bcrypt.hash("adminpassword", 10);
+  await Admin.insertMany([
+    { email: "admin_lpu", passwordHash: adminPasswordHash, role: "admin" },
+    { email: "admin@lpu.co.in", passwordHash: adminPasswordHash, role: "admin" },
+    { email: "warden_bh", passwordHash: adminPasswordHash, role: "admin" },
+    { email: "warden_gh", passwordHash: adminPasswordHash, role: "admin" },
+  ]);
+  console.log(`[Seeder] Seeded 4 Registered Warden/Admin Accounts.`);
+
+  // Create sample applications
+  const sampleApplications = [];
+  for (let i = 0; i < createdStudents.length; i++) {
+    const student = createdStudents[i];
+    const eligibleHostels = createdHostels.filter(h => h.genderAllowed === student.gender);
+    
+    const application = {
+      applicationId: `APP-2026-${(10000 + i).toString()}`,
+      studentRollNumber: student.rollNumber,
+      studentName: student.name,
+      studentEmail: student.email,
+      department: student.department,
+      year: student.year,
+      gender: student.gender,
+      cgpa: student.cgpa,
+      preferences: eligibleHostels.slice(0, 3).map((hostel, index) => ({
+        hostelId: hostel._id,
+        hostelName: hostel.name,
+        roomType: "Quad",
+        acPreference: Math.random() > 0.5 ? "AC" : "Non-AC",
+        priority: index + 1
+      })),
+      specialAccommodations: i === 0 ? "Ground floor room due to mobility issues" : "",
+      status: i % 2 === 0 ? "SUBMITTED" : "UNDER_REVIEW",
+      submittedAt: new Date()
+    };
+    sampleApplications.push(application);
+  }
+
+  await Application.insertMany(sampleApplications);
+  console.log(`[Seeder] Seeded ${sampleApplications.length} Initial Applications.`);
+
+  console.log("[Seeder] Database seeding successfully completed!");
+}
+
+module.exports = seedData;
+
+if (require.main === module) {
+  seedData()
+    .then(() => {
+      console.log("[Seeder] Standalone execution completed.");
+      process.exit(0);
+    })
+    .catch((err) => {
+      console.error("[Seeder] Fatal error during seeding:", err);
+      process.exit(1);
+    });
+}
